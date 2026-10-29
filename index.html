@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ReviseAI - Réviser avec l'IA</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState } = React;
+
+    function App() {
+      const [apiKey, setApiKey] = useState(localStorage.getItem('gemini_key') || '');
+      const [showSettings, setShowSettings] = useState(!apiKey);
+      const [selectedImage, setSelectedImage] = useState(null);
+      const [imageBase64, setImageBase64] = useState('');
+      const [loading, setLoading] = useState(false);
+      const [courseData, setCourseData] = useState(null);
+      const [activeTab, setActiveTab] = useState('summary');
+      const [userAnswers, setUserAnswers] = useState({});
+      const [chatMessages, setChatMessages] = useState([]);
+      const [chatInput, setChatInput] = useState('');
+      const [chatLoading, setChatLoading] = useState(false);
+      const [error, setError] = useState('');
+
+      const saveKey = (key) => {
+        setApiKey(key);
+        localStorage.setItem('gemini_key', key);
+        setShowSettings(false);
+      };
+
+      const handleImageUpload = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        
+        setSelectedImage(URL.createObjectURL(file));
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          setImageBase64(reader.result.split(',')[1]);
+        };
+        reader.readAsDataURL(file);
+      };
+
+      const callGemini = async (prompt, base64Image = null) => {
+        const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+        let lastError = null;
+
+        for (const model of models) {
+          try {
+            const parts = [{ text: prompt }];
+            if (base64Image) {
+              parts.push({ inline_data: { mime_type: "image/jpeg", data: base64Image } });
+            }
+
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ contents: [{ parts }] })
+            });
+
+            const data = await response.json();
+            if (data.error) throw new Error(data.error.message);
+            return data.candidates[0].content.parts[0].text;
+          } catch (err) {
+            lastError = err;
+          }
+        }
+        throw lastError;
+      };
+
+      const analyzeCourse = async () => {
+        if (!apiKey) return setShowSettings(true);
+        if (!imageBase64) return setError('Veuillez sélectionner une image de cours.');
+
+        setLoading(true);
+        setError('');
+
+        const prompt = `
+          Analyse cette image de cours et génère une réponse STRICTEMENT au format JSON valide avec cette structure :
+          {
+            "summary": ["Point clé 1", "Point clé 2"],
+            "definitions": [{"term": "Terme", "definition": "Explication"}],
+            "quiz": [
+              {
+                "question": "Question ?",
+                "options": ["A", "B", "C", "D"],
+                "correctIndex": 0,
+                "explanation": "Explication de la réponse."
+              }
+            ],
+            "steps": ["Étape 1", "Étape 2"]
+          }
+          Ne mets aucun texte avant ou après le JSON.
+        `;
+
+        try {
+          const rawText = await callGemini(prompt, imageBase64);
+          const jsonText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+          const parsed = JSON.parse(jsonText);
+
+          setCourseData(parsed);
+          setChatMessages([{ role: 'model', text: 'Bonjour ! Je suis ton tuteur IA. Pose-moi n\'importe quelle question sur ce cours !' }]);
+        } catch (err) {
+          setError(`Erreur d'analyse : ${err.message}`);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const sendChatMessage = async () => {
+        if (!chatInput.trim() || !apiKey || chatLoading) return;
+
+        const newMessages = [...chatMessages, { role: 'user', text: chatInput }];
+        setChatMessages(newMessages);
+        setChatInput('');
+        setChatLoading(true);
+
+        const context = courseData ? JSON.stringify(courseData) : "Aucun cours chargé.";
+        const prompt = `Contexte du cours : ${context}\n\nQuestion de l'élève : ${chatInput}`;
+
+        try {
+          const reply = await callGemini(prompt);
+          setChatMessages([...newMessages, { role: 'model', text: reply }]);
+        } catch (err) {
+          setChatMessages([...newMessages, { role: 'model', text: "Erreur lors de la réponse du tuteur." }]);
+        } finally {
+          setChatLoading(false);
+        }
+      };
+
+      return (
+        <div className="max-w-5xl mx-auto p-4 md:p-6 space-y-6">
+          <header className="flex justify-between items-center bg-slate-800 p-4 rounded-xl border border-slate-700">
+            <h1 className="text-2xl font-bold text-cyan-400">ReviseAI 🎓</h1>
+            <button 
+              onClick={() => setShowSettings(!showSettings)}
+              className="bg-slate-700 hover:bg-slate-600 text-sm px-3 py-2 rounded-lg transition"
+            >
+              ⚙️ Clé API
+            </button>
+          </header>
+
+          {showSettings && (
+            <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 space-y-4">
+              <h2 className="text-lg font-semibold">Clé API Gemini</h2>
+              <input 
+                type="password" 
+                placeholder="Colle ta clé API ici" 
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-700 p-3 rounded-lg text-white"
+              />
+              <button 
+                onClick={() => saveKey(apiKey)}
+                className="w-full bg-cyan-600 hover:bg-cyan-500 p-3 rounded-lg font-medium transition"
+              >
+                Enregistrer
+              </button>
+            </div>
+          )}
+
+          <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 text-center space-y-4">
+            <input 
+              type="file" 
+              accept="image/*" 
+              onChange={handleImageUpload} 
+              id="file-upload" 
+              className="hidden" 
+            />
+            <label 
+              htmlFor="file-upload" 
+              className="inline-block bg-slate-700 hover:bg-slate-600 px-6 py-3 rounded-lg cursor-pointer transition font-medium"
+            >
+              📷 Charger une photo de cours
+            </label>
+
+            {selectedImage && (
+              <div className="mt-4 flex flex-col items-center gap-4">
+                <img src={selectedImage} alt="Aperçu" className="max-h-60 rounded-lg border border-slate-600" />
+                <button 
+                  onClick={analyzeCourse} 
+                  disabled={loading}
+                  className="bg-cyan-600 hover:bg-cyan-500 px-8 py-3 rounded-lg font-semibold transition disabled:opacity-50"
+                >
+                  {loading ? 'Analyse en cours...' : 'Lancer la révision'}
+                </button>
+              </div>
+            )}
+
+            {error && <p className="text-red-400 text-sm">{error}</p>}
+          </div>
+
+          {courseData && (
+            <div className="space-y-6">
+              <div className="flex gap-2 border-b border-slate-700 pb-2">
+                {['summary', 'quiz', 'steps'].map((tab) => (
+                  <button
+                    key={tab}
+                    onClick={() => setActiveTab(tab)}
+                    className={`px-4 py-2 rounded-lg font-medium capitalize transition ${
+                      activeTab === tab ? 'bg-cyan-600 text-white' : 'bg-slate-800 hover:bg-slate-700'
+                    }`}
+                  >
+                    {tab === 'summary' ? 'Résumé' : tab === 'quiz' ? 'QCM Interactif' : 'Apprentissage'}
+                  </button>
+                ))}
+              </div>
+
+              {activeTab === 'summary' && (
+                <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 space-y-4">
+                  <h3 className="text-xl font-bold text-cyan-400">Points Clés</h3>
+                  <ul className="list-disc pl-5 space-y-2">
+                    {courseData.summary.map((point, index) => (
+                      <li key={index}>{point}</li>
+                    ))}
+                  </ul>
+
+                  <h3 className="text-xl font-bold text-cyan-400 pt-4">Définitions importantes</h3>
+                  <div className="grid md:grid-cols-2 gap-4">
+                    {courseData.definitions.map((def, idx) => (
+                      <div key={idx} className="bg-slate-900 p-4 rounded-lg border border-slate-700">
+                        <span className="font-semibold text-cyan-300">{def.term} : </span>
+                        <span>{def.definition}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {activeTab === 'quiz' && (
+                <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 space-y-6">
+                  {courseData.quiz.map((q, qIdx) => (
+                    <div key={qIdx} className="bg-slate-900 p-4 rounded-lg space-y-3">
+                      <p className="font-medium text-lg">{qIdx + 1}. {q.question}</p>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                        {q.options.map((opt, oIdx) => {
+                          const isSelected = userAnswers[qIdx] === oIdx;
+                          const isCorrect = q.correctIndex === oIdx;
+                          let btnStyle = "bg-slate-800 hover:bg-slate-700";
+
+                          if (userAnswers[qIdx] !== undefined) {
+                            if (isCorrect) btnStyle = "bg-emerald-600";
+                            else if (isSelected) btnStyle = "bg-rose-600";
+                          }
+
+                          return (
+                            <button
+                              key={oIdx}
+                              onClick={() => setUserAnswers({ ...userAnswers, [qIdx]: oIdx })}
+                              className={`p-3 text-left rounded-lg transition ${btnStyle}`}
+                            >
+                              {opt}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {userAnswers[qIdx] !== undefined && (
+                        <p className="text-sm text-slate-400 mt-2">💡 {q.explanation}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {activeTab === 'steps' && (
+                <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 space-y-4">
+                  {courseData.steps.map((step, idx) => (
+                    <div key={idx} className="flex gap-4 items-start bg-slate-900 p-4 rounded-lg">
+                      <span className="bg-cyan-600 text-white font-bold w-8 h-8 rounded-full flex items-center justify-center shrink-0">
+                        {idx + 1}
+                      </span>
+                      <p className="pt-1">{step}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 space-y-4">
+                <h3 className="text-lg font-bold text-cyan-400">🤖 Tuteur IA</h3>
+                <div className="h-48 overflow-y-auto space-y-3 p-3 bg-slate-900 rounded-lg border border-slate-700">
+                  {chatMessages.map((msg, idx) => (
+                    <div key={idx} className={`p-3 rounded-lg text-sm max-w-[80%] ${msg.role === 'user' ? 'bg-cyan-700 ml-auto' : 'bg-slate-800'}`}>
+                      {msg.text}
+                    </div>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <input 
+                    type="text" 
+                    placeholder="Pose une question..."
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && sendChatMessage()}
+                    className="flex-1 bg-slate-900 border border-slate-700 p-3 rounded-lg"
+                  />
+                  <button 
+                    onClick={sendChatMessage}
+                    className="bg-cyan-600 hover:bg-cyan-500 px-5 rounded-lg font-medium transition"
+                  >
+                    Envoyer
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
